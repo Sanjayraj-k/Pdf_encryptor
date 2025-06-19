@@ -43,7 +43,7 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_SECRET = os.getenv("RAZORPAY_SECRET")
 EMAIL_USERNAME = os.getenv("EMAIL_USERNAME")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://shimalakmald23aim:shimal007@visitorsdata.aw8yfkt.mongodb.net/")
+MONGO_URI = os.getenv("MONGO_URI")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 # Validate environment variables
