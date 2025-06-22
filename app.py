@@ -57,7 +57,7 @@ except Exception as e:
     print(f"MongoDB connection failed: {str(e)}")
 
 # API Keys & Config
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "your_api_key")
 UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), "eduquiz_uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
