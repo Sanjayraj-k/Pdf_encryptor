@@ -1,14 +1,13 @@
 import React, { useState } from "react";
 import axios from "axios";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-function Signup() {
+function Login() {
   const [form, setForm] = useState({
     name: "",
     role: "",
     email: "",
-    password: "",
-    confirmPassword: "",
+    password: ""
   });
   const navigate = useNavigate();
 
@@ -16,18 +15,19 @@ function Signup() {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleSignup = async () => {
-    if (form.password !== form.confirmPassword) {
-      alert("Passwords do not match!");
-      return;
-    }
+  const handleLogin = async () => {
     try {
-      const { confirmPassword, ...payload } = form;
-      const res = await axios.post("http://localhost:5000/api/signup", payload);
+      const res = await axios.post("http://localhost:5000/api/login", form);
+      // Store user details in localStorage
+      localStorage.setItem("user", JSON.stringify({
+        name: form.name,
+        role: form.role,
+        email: form.email
+      }));
       alert(res.data.message);
-      navigate("/login");
+      navigate("/dashboard"); // Changed to a more appropriate route after login
     } catch (err) {
-      alert(err.response?.data?.message || "An error occurred during signup.");
+      alert(err.response?.data?.message || "An error occurred during login.");
     }
   };
 
@@ -43,12 +43,14 @@ function Signup() {
             name="name"
             placeholder="Full Name"
             onChange={handleChange}
+            value={form.name}
           />
           <input
             className="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             name="role"
             placeholder="Role"
             onChange={handleChange}
+            value={form.role}
           />
           <input
             className="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -56,6 +58,7 @@ function Signup() {
             placeholder="Email Address"
             type="email"
             onChange={handleChange}
+            value={form.email}
           />
           <input
             className="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -63,19 +66,13 @@ function Signup() {
             type="password"
             placeholder="Password"
             onChange={handleChange}
-          />
-          <input
-            className="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            name="confirmPassword"
-            type="password"
-            placeholder="Confirm Password"
-            onChange={handleChange}
+            value={form.password}
           />
           <button
             className="w-full py-3 px-4 bg-blue-600 text-white font-bold rounded-md hover:bg-blue-700 transition duration-300 ease-in-out transform hover:scale-105"
-            onClick={handleSignup}
+            onClick={handleLogin}
           >
-            Create Account
+            Login
           </button>
         </div>
       </div>
@@ -83,4 +80,4 @@ function Signup() {
   );
 }
 
-export default Signup;
+export default Login;
