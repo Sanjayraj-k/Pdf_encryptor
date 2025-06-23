@@ -1,296 +1,339 @@
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from pymongo import MongoClient
-from bson import ObjectId
-from datetime import datetime
-import bcrypt
+import requests
+import json
 import re
 
 app = Flask(__name__)
-# This allows your React app at localhost:5173 to communicate with your Flask server
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+CORS(app)
 
-# --- Database Connection ---
-# Make sure your MongoDB server is running
-mongo_uri = "mongodb://localhost:27017/"
-client = MongoClient(mongo_uri)
-db = client['hrDashboard']  # The database name
+JUDGE0_URL = "https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&wait=true"
 
-# --- Helper Functions ---
-def is_valid_email(email):
-    """Validates email format."""
-    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(email_regex, email)
+headers = {
+    "Content-Type": "application/json",
+    "X-RapidAPI-Key": "51d8f38dd8msh2ed992a8c0acd11p11e1a0jsnb83a4fc1d936",  # Your provided Judge0 API key
+    "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
+}
 
-# --- Authentication Endpoints ---
+language_ids = {
+    'javascript': 63,  # Node.js
+    'python': 71,      # Python 3
+    'java': 62,        # Java
+    'cpp': 54,         # C++
+    'c': 50            # C
+}
 
-@app.route('/api/signup', methods=['POST'])
-def signup():
-    """Registers a new HR user."""
+def wrap_code_with_tests(question_id, code, language, test_cases):
+    if question_id == 1:  # Add Two Numbers
+        if language == 'javascript':
+            return f"""
+{code}
+console.log(add({test_cases[0][0]}, {test_cases[0][1]}));
+"""
+        elif language == 'python':
+            return f"""
+{code}
+solution = Solution()
+print(solution.add({test_cases[0][0]}, {test_cases[0][1]}))
+"""
+        elif language == 'java':
+            return f"""
+{code}
+public class Main {{
+    public static void main(String[] args) {{
+        Solution sol = new Solution();
+        System.out.println(sol.add({test_cases[0][0]}, {test_cases[0][1]}));
+    }}
+}}
+"""
+        elif language == 'cpp':
+            return f"""
+{code}
+#include <iostream>
+int main() {{
+    Solution sol;
+    std::cout << sol.add({test_cases[0][0]}, {test_cases[0][1]}) << std::endl;
+    return 0;
+}}
+"""
+        elif language == 'c':
+            return f"""
+{code}
+#include <stdio.h>
+int main() {{
+    printf("%d\\n", add({test_cases[0][0]}, {test_cases[0][1]}));
+    return 0;
+}}
+"""
+    elif question_id == 2:  # Reverse String
+        input_str = test_cases[0][0]
+        if language == 'javascript':
+            return f"""
+{code}
+let s = {json.dumps(list(input_str))};
+reverseString(s);
+console.log(s);
+"""
+        elif language == 'python':
+            return f"""
+{code}
+solution = Solution()
+s = {json.dumps(list(input_str))}
+solution.reverseString(s)
+print(s)
+"""
+        elif language == 'java':
+            return f"""
+{code}
+public class Main {{
+    public static void main(String[] args) {{
+        Solution sol = new Solution();
+        char[] s = {json.dumps(input_str).replace('"', "'")}.toCharArray();
+        sol.reverseString(s);
+        System.out.println(new String(s));
+    }}
+}}
+"""
+        elif language == 'cpp':
+            return f"""
+{code}
+#include <iostream>
+#include <vector>
+int main() {{
+    Solution sol;
+    std::vector<char> s = {json.dumps(list(input_str)).replace('"', "'")};
+    sol.reverseString(s);
+    for(char c : s) std::cout << c;
+    std::cout << std::endl;
+    return 0;
+}}
+"""
+        elif language == 'c':
+            return f"""
+{code}
+#include <stdio.h>
+#include <string.h>
+int main() {{
+    char s[] = {json.dumps(input_str)};
+    reverseString(s, strlen(s));
+    printf("%s\\n", s);
+    return 0;
+}}
+"""
+    elif question_id == 3:  # Two Sum
+        nums, target = test_cases[0]
+        if language == 'javascript':
+            return f"""
+{code}
+console.log(twoSum({json.dumps(nums)}, {target}));
+"""
+        elif language == 'python':
+            return f"""
+{code}
+solution = Solution()
+print(solution.twoSum({json.dumps(nums)}, {target}))
+"""
+        elif language == 'java':
+            return f"""
+{code}
+public class Main {{
+    public static void main(String[] args) {{
+        Solution sol = new Solution();
+        int[] nums = {json.dumps(nums)};
+        int[] result = sol.twoSum(nums, {target});
+        System.out.println("[" + result[0] + "," + result[1] + "]");
+    }}
+}}
+"""
+        elif language == 'cpp':
+            return f"""
+{code}
+#include <iostream>
+#include <vector>
+int main() {{
+    Solution sol;
+    std::vector<int> nums = {json.dumps(nums)};
+    std::vector<int> result = sol.twoSum(nums, {target});
+    std::cout << "[" << result[0] << "," << result[1] << "]" << std::endl;
+    return 0;
+}}
+"""
+        elif language == 'c':
+            return f"""
+{code}
+#include <stdio.h>
+#include <stdlib.h>
+int main() {{
+    int nums[] = {json.dumps(nums)};
+    int target = {test_cases[0][1]};
+    int returnSize;
+    int* result = twoSum(nums, {len(nums)}, target, &returnSize);
+    printf("[%d,%d]\\n", result[0], result[1]);
+    free(result);
+    return 0;
+}}
+"""
+    return code
+
+@app.route('/run', methods=['POST'])
+def run_code():
+    data = request.get_json()
+    code = data.get('code')
+    language = data.get('language')
+    question_id = data.get('question_id')
+    test_case = data.get('test_case')
+
+    if not all([code, language, question_id]):
+        return jsonify({'error': 'Missing required parameters'}), 400
+
     try:
-        data = request.get_json()
-        email = data.get("email")
-        password = data.get("password")
-
-        if not email or not password:
-            return jsonify({"error": "Email and password are required"}), 400
-        if not is_valid_email(email):
-            return jsonify({"error": "Invalid email format"}), 400
-        if len(password) < 6:
-            return jsonify({"error": "Password must be at least 6 characters long"}), 400
-        if db.users.find_one({"email": email}):
-            return jsonify({"error": "Email already registered"}), 409
-
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        user = {"email": email, "hashedPassword": hashed_password, "createdAt": datetime.utcnow()}
-        db.users.insert_one(user)
-        
-        user_response = {"email": user["email"], "createdAt": user["createdAt"]}
-        return jsonify({"message": "User registered successfully", "user": user_response}), 201
+        if question_id == 1:  # Add Two Numbers
+            # Handle test case format like "a = 0, b = undefined" or "0 undefined"
+            if test_case:
+                # Normalize input: remove "a =", "b =", and commas
+                cleaned_test_case = re.sub(r'a\s*=\s*', '', test_case)
+                cleaned_test_case = re.sub(r'b\s*=\s*', '', cleaned_test_case)
+                cleaned_test_case = cleaned_test_case.replace(',', ' ').strip()
+                inputs = cleaned_test_case.split()
+                if len(inputs) != 2:
+                    return jsonify({'error': 'Invalid test case: Expected two integers'}), 400
+                if any(x.lower() in ['undefined', 'null', 'nan'] for x in inputs):
+                    return jsonify({'error': 'Invalid test case: Inputs must be integers, not undefined/null/NaN'}), 400
+                inputs = [int(x) for x in inputs]
+            else:
+                inputs = [2, 3]
+            test_cases = [(inputs[0], inputs[1])]
+            expected = inputs[0] + inputs[1]
+        elif question_id == 2:  # Reverse String
+            input_str = test_case or "hello"
+            if not input_str.isascii():
+                return jsonify({'error': 'Invalid test case: Input must be printable ASCII characters'}), 400
+            test_cases = [(input_str,)]
+            expected = input_str[::-1]
+        elif question_id == 3:  # Two Sum
+            if test_case:
+                parts = test_case.split(', target = ')
+                if len(parts) != 2:
+                    return jsonify({'error': 'Invalid test case: Expected format "nums = [..], target = .."'}), 400
+                nums_str = parts[0].replace('nums = ', '').strip()
+                nums = json.loads(nums_str)
+                target = int(parts[1])
+            else:
+                nums = [2, 7, 11, 15]
+                target = 9
+            test_cases = [(nums, target)]
+            expected = [0, 1]  # Default for demo
+        else:
+            return jsonify({'error': 'Invalid question ID'}), 400
+    except ValueError as e:
+        return jsonify({'error': f'Invalid test case format: Inputs must be valid integers'}), 400
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'Invalid test case format: Invalid JSON for nums array'}), 400
     except Exception as e:
-        app.logger.error(f"Signup error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        return jsonify({'error': f'Invalid test case format: {str(e)}'}), 400
 
-@app.route('/api/login', methods=['POST'])
-def login():
-    """Logs in an HR user."""
+    wrapped_code = wrap_code_with_tests(question_id, code, language, test_cases)
+
     try:
-        data = request.get_json()
-        email = data.get("email")
-        password = data.get("password")
+        response = requests.post(JUDGE0_URL, json={
+            'source_code': wrapped_code,
+            'language_id': language_ids[language],
+        }, headers=headers)
 
-        if not email or not password:
-            return jsonify({"error": "Email and password are required"}), 400
+        if response.status_code != 200:
+            return jsonify({'error': f'Judge0 API error: {response.text}'}), 500
 
-        user = db.users.find_one({"email": email})
-        if not user or not bcrypt.checkpw(password.encode('utf-8'), user['hashedPassword'].encode('utf-8')):
-            return jsonify({"error": "Invalid email or password"}), 401
-        
-        user_response = {"email": user["email"], "id": str(user["_id"])}
-        return jsonify({"message": "Login successful", "user": user_response}), 200
-    except Exception as e:
-        app.logger.error(f"Login error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        result = response.json()
+        stdout = result.get('stdout', '')
+        stderr = result.get('stderr', '')
+        compile_output = result.get('compile_output', '')
 
-# --- Candidate Login Endpoint ---
-@app.route('/api/candidate/login', methods=['POST'])
-def candidate_login():
-    """Logs in a candidate (student) user."""
-    try:
-        data = request.get_json()
-        email = data.get("email")
-        password = data.get("password")
-
-        if not email or not password:
-            return jsonify({"error": "Email and password are required"}), 400
-
-        # Find student in the database using email only
-        student = db.students.find_one({"email": email})
-        if not student or not bcrypt.checkpw(password.encode('utf-8'), student['password'].encode('utf-8')):
-            return jsonify({"error": "Invalid credentials"}), 401
-
-        # Prepare response (exclude password)
-        student_response = {
-            "id": str(student["_id"]),
-            "name": student["name"],
-            "email": student["email"],
-            "role": student["role"],
-            "rollNo": student["rollNo"],
-            "status": student["status"]
-        }
-        # Simulate a token (replace with JWT in production)
-        token = "dummy-token"
+        output = stdout.strip() if stdout else (compile_output or stderr or "No Output")
+        passed = str(output).strip() == str(expected).strip()
 
         return jsonify({
-            "message": "Login successful",
-            "student": student_response,
-            "token": token
-        }), 200
+            'output': f"Test Case:\nInput: {test_case or 'default'}\nOutput: {output}",
+            'passed': passed,
+            'error': stderr or compile_output
+        })
     except Exception as e:
-        app.logger.error(f"Candidate login error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        return jsonify({'error': f'Error executing code: {str(e)}'}), 500
 
-# --- Roles Endpoints (Scoped to HR User) ---
+@app.route('/submit', methods=['POST'])
+def submit_code():
+    data = request.get_json()
+    code = data.get('code')
+    language = data.get('language')
+    question_id = data.get('question_id')
 
-@app.route('/api/roles', methods=['GET'])
-def get_roles():
-    """Gets all roles created by a specific HR user."""
-    hr_email = request.args.get('hrEmail')
-    if not hr_email:
-        return jsonify({"error": "hrEmail query parameter is required"}), 400
-    
-    try:
-        roles_cursor = db.roles.find({"hrEmail": hr_email})
-        roles_list = []
-        for role in roles_cursor:
-            role['_id'] = str(role['_id'])  # Convert ObjectId for JSON compatibility
-            roles_list.append(role)
-        return jsonify(roles_list), 200
-    except Exception as e:
-        app.logger.error(f"Get roles error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+    if not all([code, language, question_id]):
+        return jsonify({'error': 'Missing required parameters'}), 400
 
-@app.route('/api/roles', methods=['POST'])
-def create_role():
-    """Creates a new role and associates it with the logged-in HR user."""
-    try:
-        data = request.get_json()
-        hr_email = data.get("hrEmail")
+    test_cases = []
+    expected_outputs = []
+    if question_id == 1:  # Add Two Numbers
+        test_cases = [(2, 3), (-1, 1)]
+        expected_outputs = [5, 0]
+    elif question_id == 2:  # Reverse String
+        test_cases = [("hello",), ("Hannah",)]
+        expected_outputs = ["olleh", "hannaH"]
+    elif question_id == 3:  # Two Sum
+        test_cases = [([2,7,11,15], 9), ([3,2,4], 6)]
+        expected_outputs = [[0,1], [1,2]]
+    else:
+        return jsonify({'error': 'Invalid question ID'}), 400
+
+    results = []
+    passed_count = 0
+
+    for i, test_case in enumerate(test_cases):
+        wrapped_code = wrap_code_with_tests(question_id, code, language, [test_case])
         
-        if not hr_email:
-            return jsonify({"error": "hrEmail is required to create a role"}), 400
+        try:
+            response = requests.post(JUDGE0_URL, json={
+                'source_code': wrapped_code,
+                'language_id': language_ids[language],
+            }, headers=headers)
 
-        # Basic validation for required fields
-        required_fields = ["title", "description", "date", "maxStudents", "seatsAvailable", "package"]
-        if not all(field in data for field in required_fields):
-            return jsonify({"error": f"Missing one of required fields: {required_fields}"}), 400
+            if response.status_code != 200:
+                results.append({
+                    'test_case': f"Test Case {i+1}",
+                    'error': f"Judge0 API error: {response.text}"
+                })
+                continue
 
-        role = {
-            "hrEmail": hr_email,
-            "title": data.get("title"),
-            "description": data.get("description"),
-            "date": data.get("date"),
-            "duration": data.get("duration", "60"),
-            "maxStudents": int(data.get("maxStudents")),
-            "seatsAvailable": int(data.get("seatsAvailable")),
-            "package": data.get("package"),
-            "studentsCount": 0,
-            "status": "Draft",
-            "createdAt": datetime.utcnow()
-        }
-        result = db.roles.insert_one(role)
-        role['_id'] = str(result.inserted_id)
-        return jsonify(role), 201
-    except Exception as e:
-        app.logger.error(f"Create role error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+            result = response.json()
+            stdout = result.get('stdout', '')
+            stderr = result.get('stderr', '')
+            compile_output = result.get('compile_output', '')
 
-# --- Students Endpoints (Scoped to HR User) ---
+            output = stdout.strip() if stdout else (compile_output or stderr or "No Output")
+            expected = str(expected_outputs[i]).strip()
+            passed = output == expected
 
-@app.route('/api/students', methods=['GET'])
-def get_students():
-    """Gets all students added by a specific HR user."""
-    hr_email = request.args.get('hrEmail')
-    if not hr_email:
-        return jsonify({"error": "hrEmail query parameter is required"}), 400
-        
-    try:
-        # Find students, excluding the sensitive password field from the result
-        students_cursor = db.students.find({"hrEmail": hr_email}, {'password': 0})
-        students_list = []
-        for student in students_cursor:
-            student['_id'] = str(student['_id'])
-            students_list.append(student)
-        return jsonify(students_list), 200
-    except Exception as e:
-        app.logger.error(f"Get students error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+            if passed:
+                passed_count += 1
 
-@app.route('/api/students', methods=['POST'])
-def create_student():
-    """Creates a new student and associates them with the logged-in HR user."""
-    try:
-        data = request.get_json()
-        hr_email = data.get("hrEmail")
+            results.append({
+                'test_case': f"Test Case {i+1}",
+                'input': str(test_case),
+                'output': output,
+                'expected': expected,
+                'passed': passed,
+                'error': stderr or compile_output
+            })
 
-        if not hr_email:
-            return jsonify({"error": "hrEmail is required to add a student"}), 400
-        
-        required_fields = ["name", "email", "rollNo", "role", "password"]
-        if not all(field in data for field in required_fields):
-            return jsonify({"error": f"Missing one of required fields: {required_fields}"}), 400
-        
-        if db.students.find_one({"email": data.get("email")}):
-            return jsonify({"error": "A student with this email already exists"}), 409
+        except Exception as e:
+            results.append({
+                'test_case': f"Test Case {i+1}",
+                'error': f"Error: {str(e)}"
+            })
 
-        hashed_password = bcrypt.hashpw(data.get("password").encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-        student = {
-            "hrEmail": hr_email,
-            "name": data.get("name"),
-            "email": data.get("email"),
-            "rollNo": data.get("rollNo"),
-            "role": data.get("role"),
-            "password": hashed_password,
-            "status": "Eligible",
-            "createdAt": datetime.utcnow()
-        }
-        result = db.students.insert_one(student)
-        student['_id'] = str(result.inserted_id)
-        del student['password']  # Never send the password hash back in the response
-        return jsonify(student), 201
-    except Exception as e:
-        app.logger.error(f"Create student error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-    
-@app.route('/api/get-random-questions', methods=['GET'])
-def get_random_questions():
-    """Fetches a random set of questions from the aptitude collection."""
-    try:
-        # Get the total number of questions in the aptitude collection
-        total_questions = db.aptitude.count_documents({})
-        if total_questions == 0:
-            return jsonify({"error": "No questions available in the aptitude collection"}), 404
-
-        # Determine how many questions to fetch (e.g., 5, or use a query parameter)
-        num_questions = min(request.args.get('count', default=5, type=int), total_questions)
-        
-        # Fetch random questions using aggregate with $sample
-        pipeline = [{"$sample": {"size": num_questions}}]
-        questions = list(db.aptitude.aggregate(pipeline))
-
-        # Convert ObjectId to string for JSON compatibility
-        for question in questions:
-            question['_id'] = str(question['_id'])
-
-        return jsonify(questions), 200
-    except Exception as e:
-        app.logger.error(f"Get random questions error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-
-@app.route('/api/submit-results', methods=['POST'])
-def submit_results():
-    """Stores quiz results for a candidate, including user details, score, percentage, and round."""
-    try:
-        data = request.get_json()
-        candidate_data = data.get("candidate")
-        score = data.get("score")
-        percentage = data.get("percentage")
-        total_questions = data.get("total_questions")
-        round_number = data.get("round")
-
-        # Validate required fields
-        required_fields = ["id", "email", "rollNo", "role", "status"]
-        if not candidate_data or not all(field in candidate_data for field in required_fields):
-            return jsonify({"error": "Missing required candidate data fields: id, email, rollNo, role, status"}), 400
-        if score is None or percentage is None or total_questions is None or round_number is None:
-            return jsonify({"error": "Missing required fields: score, percentage, total_questions, or round"}), 400
-
-        # Prepare quiz result document
-        quiz_result = {
-            "candidate_id": candidate_data["id"],
-            "email": candidate_data["email"],
-            "rollNo": candidate_data["rollNo"],
-            "role": candidate_data["role"],
-            "status": candidate_data["status"],
-            "score": int(score),
-            "percentage": float(percentage),
-            "total_questions": int(total_questions),
-            "round": int(round_number),
-            "submittedAt": datetime.utcnow()
-        }
-
-        # Insert into quiz_results collection
-        result = db.quiz_results.insert_one(quiz_result)
-        quiz_result['_id'] = str(result.inserted_id)
-
-        return jsonify({
-            "message": "Quiz results stored successfully",
-            "quiz_result": quiz_result
-        }), 201
-    except Exception as e:
-        app.logger.error(f"Submit results error: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+    return jsonify({
+        'results': results,
+        'summary': f"{passed_count}/{len(test_cases)} test cases passed",
+        'all_passed': passed_count == len(test_cases)
+    })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
