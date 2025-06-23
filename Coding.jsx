@@ -9,14 +9,8 @@ const questions = [
     acceptance: "72.5%",
     description: "Write a function that adds two numbers and returns the result.",
     examples: [
-      {
-        input: "a = 2, b = 3",
-        output: "5"
-      },
-      {
-        input: "a = -1, b = 1",
-        output: "0"
-      }
+      { input: "a = 2, b = 3", output: "5" },
+      { input: "a = -1, b = 1", output: "0" }
     ],
     constraints: [
       "The numbers will be integers.",
@@ -37,14 +31,8 @@ const questions = [
     acceptance: "85.3%",
     description: "Write a function that reverses a string in-place.",
     examples: [
-      {
-        input: "['h','e','l','l','o']",
-        output: "['o','l','l','e','h']"
-      },
-      {
-        input: "['H','a','n','n','a','h']",
-        output: "['h','a','n','n','a','H']"
-      }
+      { input: "['h','e','l','l','o']", output: "['o','l','l','e','h']" },
+      { input: "['H','a','n','n','a','h']", output: "['h','a','n','n','a','H']" }
     ],
     constraints: [
       "Modify the input array in-place with O(1) extra memory.",
@@ -52,7 +40,7 @@ const questions = [
     ],
     defaultCode: {
       javascript: `/**\n * @param {character[]} s\n * @return {void} Do not return anything, modify s in-place instead.\n */\nvar reverseString = function(s) {\n    \n};`,
-      python: `class Solution:\n    def reverseString(self, s: List[str]) -> None:\n        \"\"\"\n        Do not return anything, modify s in-place instead.\n        \"\"\"\n        `,
+      python: `class Solution:\n    def reverseString(self, s: List[str]) -> None:\n        """\n        Do not return anything, modify s in-place instead.\n        """\n        `,
       java: `class Solution {\n    public void reverseString(char[] s) {\n        \n    }\n}`,
       cpp: `class Solution {\npublic:\n    void reverseString(vector<char>& s) {\n        \n    }\n};`,
       c: `void reverseString(char* s, int sSize) {\n    \n}`
@@ -65,14 +53,8 @@ const questions = [
     acceptance: "45.7%",
     description: "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
     examples: [
-      {
-        input: "nums = [2,7,11,15], target = 9",
-        output: "[0,1]"
-      },
-      {
-        input: "nums = [3,2,4], target = 6",
-        output: "[1,2]"
-      }
+      { input: "nums = [2,7,11,15], target = 9", output: "[0,1]" },
+      { input: "nums = [3,2,4], target = 6", output: "[1,2]" }
     ],
     constraints: [
       "You may assume each input would have exactly one solution.",
@@ -110,7 +92,6 @@ function LeetCodeEditor() {
   }, []);
 
   useEffect(() => {
-    // Initialize user code for all questions
     const initialUserCode = {};
     questions.forEach(q => {
       initialUserCode[q.id] = q.defaultCode[lang] || '';
@@ -150,7 +131,6 @@ function LeetCodeEditor() {
 
   const handleLanguageChange = (newLang) => {
     setLang(newLang);
-    // Update the user code with default code when language changes
     setUserCode(prev => ({
       ...prev,
       [currentQuestion.id]: currentQuestion.defaultCode[newLang] || ''
@@ -163,33 +143,22 @@ function LeetCodeEditor() {
     setIsSubmitted(false);
     
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      // Generate sample output based on question
-      let result;
-      if (currentQuestion.id === 1) {
-        // Add Two Numbers
-        const inputs = testCase.split(' ').map(Number);
-        if (inputs.some(isNaN)) {
-          setOutput('Error: Invalid test case input');
-          return;
-        }
-        result = `Test Case:\nInput: a = ${inputs[0]}, b = ${inputs[1]}\nOutput: ${inputs[0] + inputs[1]}`;
-      } else if (currentQuestion.id === 2) {
-        // Reverse String
-        const inputStr = testCase || "hello";
-        const reversed = inputStr.split('').reverse().join('');
-        result = `Test Case:\nInput: ${JSON.stringify(inputStr.split(''))}\nOutput: ${JSON.stringify(reversed.split(''))}`;
+      const response = await fetch('http://localhost:5000/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: monacoRef.current.getValue(),
+          language: lang,
+          question_id: currentQuestion.id,
+          test_case: testCase
+        })
+      });
+      const data = await response.json();
+      if (data.error) {
+        setOutput(`Error: ${data.error}`);
       } else {
-        // Two Sum
-        const parts = testCase.split(', target = ');
-        const nums = parts[0].replace('nums = [', '').replace(']', '').split(',').map(Number);
-        const target = Number(parts[1]);
-        result = `Test Case:\nInput: nums = ${JSON.stringify(nums)}, target = ${target}\nOutput: [0,1]`;
+        setOutput(data.output + (data.error ? `\nError: ${data.error}` : ''));
       }
-      
-      setOutput(result);
     } catch (e) {
       setOutput(`Error: ${e.message}`);
     } finally {
@@ -203,28 +172,26 @@ function LeetCodeEditor() {
     setIsSubmitted(true);
     
     try {
-      // Simulate API submission
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Generate random results for demo
-      const testCases = currentQuestion.examples.map((example, i) => ({
-        input: example.input,
-        output: example.output,
-        passed: Math.random() > 0.2
-      }));
-      
-      const results = testCases.map((tc, i) => 
-        `Test Case ${i+1}:\nInput: ${tc.input}\n` +
-        `Output: ${tc.passed ? tc.output : '...'}\n` +
-        `Expected: ${tc.output}\n` +
-        `Result: ${tc.passed ? '✅ Passed' : '❌ Failed'}\n`
-      ).join('\n');
-      
-      const passedCount = testCases.filter(tc => tc.passed).length;
-      const totalCount = testCases.length;
-      
-      setOutput(`${results}\n\nSubmission Result:\n${passedCount}/${totalCount} test cases passed\n\n` +
-        (passedCount === totalCount ? '🎉 All test cases passed!' : '❌ Some test cases failed'));
+      const response = await fetch('http://localhost:5000/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: monacoRef.current.getValue(),
+          language: lang,
+          question_id: currentQuestion.id
+        })
+      });
+      const data = await response.json();
+      if (data.error) {
+        setOutput(`Error: ${data.error}`);
+      } else {
+        const results = data.results.map(r => 
+          `${r.test_case}:\nInput: ${r.input}\nOutput: ${r.output}\n` +
+          `Expected: ${r.expected}\nResult: ${r.passed ? '✅ Passed' : '❌ Failed'}` +
+          (r.error ? `\nError: ${r.error}` : '')
+        ).join('\n');
+        setOutput(`${results}\n\nSubmission Result:\n${data.summary}`);
+      }
     } catch (e) {
       setOutput(`Error: ${e.message}`);
     } finally {
@@ -259,13 +226,12 @@ function LeetCodeEditor() {
       backgroundColor: '#f5f5f5',
       overflow: 'hidden'
     }}>
-      {/* Problem Description Panel */}
       <div style={{ 
         width: windowWidth < 768 ? '100%' : '40%',
         height: windowWidth < 768 ? '40%' : '100%',
         backgroundColor: 'white',
         overflowY: 'auto',
-        borderRight: windowWidth >= 768 ? '1px solid #ddd' : 'none',
+        borderRight: windowWidth >= 768 ? 'not-allowed' : 'none',
         borderBottom: windowWidth < 768 ? '1px solid #ddd' : 'none',
         padding: '16px',
         boxSizing: 'border-box',
@@ -273,7 +239,7 @@ function LeetCodeEditor() {
       }}>
         <div style={{ marginBottom: '16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ color: '#333', marginBottom: '8px' }}>{currentQuestion.id}. {currentQuestion.title}</h2>
+            <h2 style={{ color: '#333', marginBottom: '8px' }}>{currentQuestion.id}.{currentQuestion.title}</h2>
             <div style={{ display: 'flex', gap: '8px' }}>
               <button 
                 onClick={goToPreviousQuestion}
@@ -366,7 +332,6 @@ function LeetCodeEditor() {
         </div>
       </div>
 
-      {/* Code Editor Panel */}
       <div style={{ 
         flex: 1,
         display: 'flex',
@@ -374,7 +339,6 @@ function LeetCodeEditor() {
         height: windowWidth < 768 ? '60%' : '100%',
         backgroundColor: '#f5f5f5'
       }}>
-        {/* Editor Header */}
         <div style={{ 
           display: 'flex',
           justifyContent: 'space-between',
@@ -420,7 +384,6 @@ function LeetCodeEditor() {
           </select>
         </div>
         
-        {/* Code Editor */}
         <div 
           ref={editorRef} 
           style={{ 
@@ -430,7 +393,6 @@ function LeetCodeEditor() {
           }} 
         />
         
-        {/* Console Panel */}
         <div style={{ 
           height: windowWidth < 768 ? '40%' : '30%',
           backgroundColor: 'white',
@@ -496,7 +458,7 @@ function LeetCodeEditor() {
                       fontSize: '14px',
                       resize: 'none'
                     }}
-                    placeholder={`Enter test case input (e.g., ${currentQuestion.examples[0].input.replace('a = ', '').replace('b = ', '')})`}
+                    placeholder={`Enter test case input (e.g., ${currentQuestion.examples[0].input})`}
                   />
                 </div>
               </div>
@@ -507,7 +469,6 @@ function LeetCodeEditor() {
             )}
           </div>
           
-          {/* Action Buttons */}
           <div style={{ 
             display: 'flex',
             justifyContent: 'space-between',
