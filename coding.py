@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import json
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -10,7 +11,7 @@ JUDGE0_URL = "https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&
 
 headers = {
     "Content-Type": "application/json",
-    "X-RapidAPI-Key": "51d8f38dd8msh2ed992a8c0acd11p11e1a0jsnb83a4fc1d936",  # Replace with your actual Judge0 API key
+    "X-RapidAPI-Key": "51d8f38dd8msh2ed992a8c0acd11p11e1a0jsnb83a4fc1d936",  # Your provided Judge0 API key
     "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
 }
 
@@ -164,7 +165,7 @@ int main() {{
 #include <stdlib.h>
 int main() {{
     int nums[] = {json.dumps(nums)};
-    int target = {target};
+    int target = {test_cases[0][1]};
     int returnSize;
     int* result = twoSum(nums, {len(nums)}, target, &returnSize);
     printf("[%d,%d]\\n", result[0], result[1]);
@@ -187,21 +188,47 @@ def run_code():
 
     try:
         if question_id == 1:  # Add Two Numbers
-            inputs = [int(x) for x in test_case.split()] if test_case else [2, 3]
+            # Handle test case format like "a = 0, b = undefined" or "0 undefined"
+            if test_case:
+                # Normalize input: remove "a =", "b =", and commas
+                cleaned_test_case = re.sub(r'a\s*=\s*', '', test_case)
+                cleaned_test_case = re.sub(r'b\s*=\s*', '', cleaned_test_case)
+                cleaned_test_case = cleaned_test_case.replace(',', ' ').strip()
+                inputs = cleaned_test_case.split()
+                if len(inputs) != 2:
+                    return jsonify({'error': 'Invalid test case: Expected two integers'}), 400
+                if any(x.lower() in ['undefined', 'null', 'nan'] for x in inputs):
+                    return jsonify({'error': 'Invalid test case: Inputs must be integers, not undefined/null/NaN'}), 400
+                inputs = [int(x) for x in inputs]
+            else:
+                inputs = [2, 3]
             test_cases = [(inputs[0], inputs[1])]
             expected = inputs[0] + inputs[1]
         elif question_id == 2:  # Reverse String
             input_str = test_case or "hello"
+            if not input_str.isascii():
+                return jsonify({'error': 'Invalid test case: Input must be printable ASCII characters'}), 400
             test_cases = [(input_str,)]
             expected = input_str[::-1]
         elif question_id == 3:  # Two Sum
-            parts = test_case.split(', target = ') if test_case else "nums = [2,7,11,15], target = 9"
-            nums = json.loads(parts[0].replace('nums = ', ''))
-            target = int(parts[1])
+            if test_case:
+                parts = test_case.split(', target = ')
+                if len(parts) != 2:
+                    return jsonify({'error': 'Invalid test case: Expected format "nums = [..], target = .."'}), 400
+                nums_str = parts[0].replace('nums = ', '').strip()
+                nums = json.loads(nums_str)
+                target = int(parts[1])
+            else:
+                nums = [2, 7, 11, 15]
+                target = 9
             test_cases = [(nums, target)]
             expected = [0, 1]  # Default for demo
         else:
             return jsonify({'error': 'Invalid question ID'}), 400
+    except ValueError as e:
+        return jsonify({'error': f'Invalid test case format: Inputs must be valid integers'}), 400
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'Invalid test case format: Invalid JSON for nums array'}), 400
     except Exception as e:
         return jsonify({'error': f'Invalid test case format: {str(e)}'}), 400
 
@@ -212,6 +239,9 @@ def run_code():
             'source_code': wrapped_code,
             'language_id': language_ids[language],
         }, headers=headers)
+
+        if response.status_code != 200:
+            return jsonify({'error': f'Judge0 API error: {response.text}'}), 500
 
         result = response.json()
         stdout = result.get('stdout', '')
@@ -264,6 +294,13 @@ def submit_code():
                 'source_code': wrapped_code,
                 'language_id': language_ids[language],
             }, headers=headers)
+
+            if response.status_code != 200:
+                results.append({
+                    'test_case': f"Test Case {i+1}",
+                    'error': f"Judge0 API error: {response.text}"
+                })
+                continue
 
             result = response.json()
             stdout = result.get('stdout', '')
