@@ -11,7 +11,7 @@ JUDGE0_URL = "https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&
 
 headers = {
     "Content-Type": "application/json",
-    "X-RapidAPI-Key": "51d8f38dd8msh2ed992a8c0acd11p11e1a0jsnb83a4fc1d936",  # Your provided Judge0 API key
+    "X-RapidAPI-Key": "your_key",  # Your provided Judge0 API key
     "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
 }
 
