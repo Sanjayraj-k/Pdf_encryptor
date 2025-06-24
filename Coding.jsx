@@ -60,18 +60,13 @@ const CompetitiveCodingPlatform = () => {
       setLoading(true);
       setError(null);
       
-      // Try to fetch from your backend first
-      try {
-        const response = await fetch(`${API_BASE}/problem/${problemId}`);
-        if (response.ok) {
-          const problemData = await response.json();
-          setProblem(problemData);
-        } else {
-          throw new Error('Backend endpoint not available');
-        }
-      } catch (backendError) {
+      const response = await fetch(`${API_BASE}/problem/${problemId}`);
+      if (response.ok) {
+        const problemData = await response.json();
+        setProblem(problemData);
+      } else {
         // Fallback to sample data if backend is not ready
-        console.warn('Using sample problem data:', backendError.message);
+        console.warn('Using sample problem data');
         setProblem(sampleProblem);
       }
     } catch (err) {
@@ -90,25 +85,18 @@ const CompetitiveCodingPlatform = () => {
       } else {
         // Set default templates if backend doesn't have template endpoint
         const defaultTemplates = {
-          java: `public class Solution {
-    public int addTwoNumbers(int num1, int num2) {
-        // Write your code here
-        return 0;
-    }
+          java: `public int addTwoNumbers(int num1, int num2) {
+    // Write your code here
+    return 0;
 }`,
           python: `def add_two_numbers(num1, num2):
     # Write your code here
     return 0`,
-          cpp: `#include <iostream>
-using namespace std;
-
-int addTwoNumbers(int num1, int num2) {
+          cpp: `int addTwoNumbers(int num1, int num2) {
     // Write your code here
     return 0;
 }`,
-          c: `#include <stdio.h>
-
-int addTwoNumbers(int num1, int num2) {
+          c: `int addTwoNumbers(int num1, int num2) {
     // Write your code here
     return 0;
 }`
@@ -139,7 +127,7 @@ int addTwoNumbers(int num1, int num2) {
         body: JSON.stringify({
           code,
           language,
-          input: '' // You can modify this to include test inputs
+          problemId
         })
       });
 
@@ -149,21 +137,7 @@ int addTwoNumbers(int num1, int num2) {
       }
 
       const data = await response.json();
-      
-      // Since your backend returns { output, error }, we'll simulate test results
-      const mockTestResults = [
-        {
-          id: 1,
-          input: "12, 5",
-          expectedOutput: "17",
-          actualOutput: data.output || data.error || "No output",
-          passed: data.output === "17",
-          executionTime: "2ms",
-          memory: "1.2MB"
-        }
-      ];
-      
-      setTestResults(mockTestResults);
+      setTestResults(data.testResults || []);
       setSubmissionResult(null);
       
     } catch (error) {
@@ -185,14 +159,13 @@ int addTwoNumbers(int num1, int num2) {
     setError(null);
     
     try {
-      // For now, we'll use the same run endpoint since submit endpoint might not be implemented
-      const response = await fetch(`${API_BASE}/run`, {
+      const response = await fetch(`${API_BASE}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code,
           language,
-          input: ''
+          problemId
         })
       });
 
@@ -203,41 +176,16 @@ int addTwoNumbers(int num1, int num2) {
 
       const data = await response.json();
       
-      // Mock submission result
-      const mockSubmissionResult = {
-        passed: !data.error && data.output,
-        totalTests: 2,
-        passedTests: !data.error && data.output ? 2 : 0,
-        executionTime: "3ms",
-        memory: "1.5MB",
-        submissionId: "sub_" + Date.now()
-      };
+      setSubmissionResult({
+        passed: data.accepted,
+        totalTests: data.totalTests,
+        passedTests: data.passedTests,
+        executionTime: data.executionTime,
+        memory: data.memory,
+        submissionId: data.submissionId
+      });
       
-      setSubmissionResult(mockSubmissionResult);
-      
-      // Mock test results for submission
-      const mockTestResults = [
-        {
-          id: 1,
-          input: "12, 5",
-          expectedOutput: "17",
-          actualOutput: data.output || data.error || "No output",
-          passed: data.output === "17",
-          executionTime: "2ms",
-          memory: "1.2MB"
-        },
-        {
-          id: 2,
-          input: "-10, 4",
-          expectedOutput: "-6",
-          actualOutput: data.output || data.error || "No output",
-          passed: data.output === "-6",
-          executionTime: "2ms",
-          memory: "1.2MB"
-        }
-      ];
-      
-      setTestResults(mockTestResults);
+      setTestResults(data.testResults || []);
       
     } catch (error) {
       setError('Submission failed: ' + error.message);
