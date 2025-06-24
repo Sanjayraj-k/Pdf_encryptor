@@ -204,7 +204,26 @@ async function executeTestCase(userCode, language, problemId, testCase, testId) 
     
     const fullCode = generateFullCode(userCode, language, problemId, testCase);
     const config = languageConfigs[language];
-    const fileName = language === 'java' ? 'Solution.java' : `solution${config.extension}`;
+    
+    // Fixed filename generation to match compile commands
+    let fileName;
+    switch (language) {
+      case 'java':
+        fileName = 'Solution.java';
+        break;
+      case 'c':
+        fileName = 'temp.c'; // Match the compile command expectation
+        break;
+      case 'cpp':
+        fileName = 'temp.cpp'; // Match the compile command expectation
+        break;
+      case 'python':
+        fileName = 'solution.py';
+        break;
+      default:
+        fileName = `solution${config.extension}`;
+    }
+    
     const filePath = path.join(tempDir, fileName);
     
     await fs.writeFile(filePath, fullCode);
