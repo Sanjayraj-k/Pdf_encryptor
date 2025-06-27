@@ -1,688 +1,380 @@
-import os
-import tempfile
-import json
-import random
-from typing import TypedDict, List, Dict
-import PyPDF2
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from pymongo import MongoClient
-from werkzeug.security import generate_password_hash, check_password_hash
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_groq import ChatGroq
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.retrievers.multi_query import MultiQueryRetriever
-from langgraph.graph import END, StateGraph
-from werkzeug.utils import secure_filename
-import cv2
-import numpy as np
-import base64
-import time
-import logging
-import sys
-from math import hypot
-from bson.objectid import ObjectId
+from bson import ObjectId
 from datetime import datetime
-import traceback
-from dotenv import load_dotenv
+import bcrypt
+import re
+from pytz import timezone
+import json
 
 app = Flask(__name__)
-CORS(app, resources={
-    r"/api/*": {"origins": "http://localhost:5173"},
-    r"/start-exam": {"origins": "http://localhost:5173"},
-    r"/process-frame": {"origins": "http://localhost:5173"},
-    r"/end-exam": {"origins": "http://localhost:5173"},
-    r"/toggle_alerts": {"origins": "http://localhost:5173"},
-    r"/api/health": {"origins": "http://localhost:5173"},
-    r"/api/get-random-questions": {"origins": "http://localhost:5173"},
-    r"/api/submit-results": {"origins": "http://localhost:5173"},
-    r"/api/get-latest-result": {"origins": "http://localhost:5173"}
-})
+# This allows your React app at localhost:5173 to communicate with your Flask server
+CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
 
-# MongoDB Configuration
-MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
-try:
-    client = MongoClient(MONGO_URI)
-    db = client["mockauth"]
-    users_collection = db["users"]
-    quiz_collection = db["aptitudequestions"]
-    classroom_collection = db["classrooms"]
-    results_collection = db["results"]
-    print("MongoDB connection successful")
-except Exception as e:
-    print(f"MongoDB connection failed: {str(e)}")
+# --- Database Connection ---
+# Make sure your MongoDB server is running
+mongo_uri = "mongodb://localhost:27017/"
+client = MongoClient(mongo_uri)
+db = client['hrDashboard']  # The database name
 
-# API Keys & Config
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "your_api_key")
-UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), "eduquiz_uploads")
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# --- Helper Functions ---
+def is_valid_email(email):
+    """Validates email format."""
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(email_regex, email)
 
-load_dotenv()
+# --- Authentication Endpoints ---
 
-# Load aptitude questions into MongoDB if not present
-def load_aptitude_questions():
-    questions_path = os.path.join(os.path.dirname(__file__), "aptitude_questions.json")
-    if not quiz_collection.find_one({"source": "aptitude_questions"}):
-        try:
-            with open(questions_path, 'r') as f:
-                questions = json.load(f)
-            quiz_data = {
-                "title": "Aptitude Quiz",
-                "questions": questions,
-                "source": "aptitude_questions",
-                "createdDate": datetime.now()
-            }
-            quiz_collection.insert_one(quiz_data)
-            print("Aptitude questions loaded into MongoDB")
-        except Exception as e:
-            print(f"Failed to load aptitude questions: {str(e)}")
+@app.route('/api/signup', methods=['POST'])
+def signup():
+    """Registers a new HR user."""
+    try:
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
 
-load_aptitude_questions()
+        if not email or not password:
+            return jsonify({"error": "Email and password are required"}), 400
+        if not is_valid_email(email):
+            return jsonify({"error": "Invalid email format"}), 400
+        if len(password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters long"}), 400
+        if db.users.find_one({"email": email}):
+            return jsonify({"error": "Email already registered"}), 409
 
-# --- LAZY LOADING IMPLEMENTATION ---
-llm = None
-embeddings = None
-face_cascade = None
-eye_cascade = None
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        user = {"email": email, "hashedPassword": hashed_password, "createdAt": datetime.utcnow()}
+        db.users.insert_one(user)
+        
+        user_response = {"email": user["email"], "createdAt": user["createdAt"]}
+        return jsonify({"message": "User registered successfully", "user": user_response}), 201
+    except Exception as e:
+        app.logger.error(f"Signup error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-def get_llm():
-    global llm
-    if llm is None:
-        print("Initializing ChatGroq for the first time...")
-        try:
-            llm = ChatGroq(
-                temperature=0.2,
-                model_name="meta-llama/llama-4-maverick-17b-128e-instruct",
-                api_key=GROQ_API_KEY
-            )
-            print("ChatGroq initialized successfully")
-        except Exception as e:
-            print(f"ChatGroq initialization failed: {str(e)}")
-            raise
-    return llm
-
-def get_embeddings():
-    global embeddings
-    if embeddings is None:
-        print("Initializing HuggingFaceEmbeddings for the first time...")
-        try:
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2"
-            )
-            print("HuggingFaceEmbeddings initialized successfully")
-        except Exception as e:
-            print(f"HuggingFaceEmbeddings initialization failed: {str(e)}")
-            raise
-    return embeddings
-
-def get_face_cascade():
-    global face_cascade
-    if face_cascade is None:
-        print("Loading face cascade model...")
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        if face_cascade.empty():
-            raise RuntimeError("Failed to load face cascade model")
-    return face_cascade
-
-def get_eye_cascade():
-    global eye_cascade
-    if eye_cascade is None:
-        print("Loading eye cascade model...")
-        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-        if eye_cascade.empty():
-            raise RuntimeError("Failed to load eye cascade model")
-    return eye_cascade
-# --- END OF LAZY LOADING IMPLEMENTATION ---
-
-# Set up logging for face tracking
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Global variables for face tracking
-ALERT_ENABLED = True
-looking_away = False
-looking_away_start_time = 0
-alert_threshold = 3.0
-last_alert_time = 0
-alert_cooldown = 10.0
-warnings = 0
-max_warnings = 10
-long_blink_count = 0
-
-# Default user setup
-default_user = {
-    "name": "Shimal",
-    "role": "admin",
-    "email": "shimal@example.com",
-    "password": generate_password_hash("123456")
-}
-
-if not users_collection.find_one({"email": default_user["email"]}):
-    users_collection.insert_one(default_user)
-    print("✅ Default user inserted ")
-else:
-    print("ℹ️ Default user already exists.")
-
-@app.route("/api/login", methods=["POST"])
+@app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
-    name = data.get("name")
-    role = data.get("role")
-    email = data.get("email")
-    password = data.get("password")
-
-    user = users_collection.find_one({"email": email})
-
-    if not user:
-        return jsonify({"message": "User not found"}), 401
-
-    if user["name"] != name or user["role"] != role:
-        return jsonify({"message": "Invalid name or role"}), 401
-
-    if not check_password_hash(user["password"], password):
-        return jsonify({"message": "Invalid password"}), 401
-
-    return jsonify({"message": "Login successful"}), 200
-
-# Endpoint to fetch 15 random questions
-@app.route('/api/get-random-questions', methods=['GET'])
-def get_random_questions():
+    """Logs in an HR user."""
     try:
-        quiz = quiz_collection.find_one({"source": "aptitude_questions"})
-        if not quiz or not quiz.get("questions"):
-            return jsonify({"error": "No questions found in database"}), 404
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
 
-        questions = quiz["questions"]
-        random_questions = random.sample(questions, min(15, len(questions)))
-        return jsonify({"questions": random_questions}), 200
+        if not email or not password:
+            return jsonify({"error": "Email and password are required"}), 400
+
+        user = db.users.find_one({"email": email})
+        if not user or not bcrypt.checkpw(password.encode('utf-8'), user['hashedPassword'].encode('utf-8')):
+            return jsonify({"error": "Invalid email or password"}), 401
+        
+        user_response = {"email": user["email"], "id": str(user["_id"])}
+        return jsonify({"message": "Login successful", "user": user_response}), 200
     except Exception as e:
-        logger.error(f"Error fetching random questions: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Login error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-# Endpoint to submit results
-@app.route('/api/submit-results', methods=['POST'])
-def submit_results():
+# --- Candidate Login Endpoint ---
+@app.route('/api/candidate/login', methods=['POST'])
+def candidate_login():
+    """Logs in a candidate (student) user."""
     try:
-        data = request.json
-        answers = data.get("answers")  # {question_index: selected_option}
-        questions = data.get("questions")  # List of questions for reference
-        user_email = data.get("user_email", "shimal@example.com")
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
 
-        if not answers or not questions:
-            return jsonify({"error": "Missing answers or questions"}), 400
+        if not email or not password:
+            return jsonify({"error": "Email and password are required"}), 400
 
-        score = 0
-        results = []
-        for idx, q in enumerate(questions):
-            selected = answers.get(str(idx))
-            is_correct = selected == q["answer"] if selected else False
-            if is_correct:
-                score += 1
-            results.append({
-                "question": q["question"],
-                "selected": selected or "None",
-                "correct_answer": q["answer"],
-                "is_correct": is_correct
-            })
+        # Find student in the database using email only
+        student = db.students.find_one({"email": email})
+        if not student or not bcrypt.checkpw(password.encode('utf-8'), student['password'].encode('utf-8')):
+            return jsonify({"error": "Invalid credentials"}), 401
 
-        result_data = {
-            "user_email": user_email,
-            "score": score,
-            "total_questions": len(questions),
-            "results": results,
-            "timestamp": datetime.now()
+        # Prepare response (exclude password)
+        student_response = {
+            "id": str(student["_id"]),
+            "name": student["name"],
+            "email": student["email"],
+            "role": student["role"],
+            "rollNo": student["rollNo"],
+            "status": student["status"]
         }
-        result_id = results_collection.insert_one(result_data).inserted_id
-
-        return jsonify({"message": "Results submitted", "result_id": str(result_id), "score": score}), 200
-    except Exception as e:
-        logger.error(f"Error submitting results: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-# New endpoint to fetch the latest result for a user
-@app.route('/api/get-latest-result', methods=['POST'])
-def get_latest_result():
-    try:
-        data = request.json
-        user_email = data.get("user_email", "shimal@example.com")
-        result = results_collection.find_one(
-            {"user_email": user_email},
-            sort=[("timestamp", -1)]
-        )
-        if not result:
-            return jsonify({"error": "No results found for user"}), 404
+        # Simulate a token (replace with JWT in production)
+        token = "dummy-token"
 
         return jsonify({
-            "score": result["score"],
-            "total_questions": result["total_questions"],
-            "percentage": (result["score"] / result["total_questions"] * 100) if result["total_questions"] > 0 else 0,
-            "question_results": result["results"]
+            "message": "Login successful",
+            "student": student_response,
+            "token": token
         }), 200
     except Exception as e:
-        logger.error(f"Error fetching latest result: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Candidate login error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-# ... (Rest of the existing routes remain unchanged)
-class GraphState(TypedDict):
-    retriever: MultiQueryRetriever
-    content: str
-    difficulty: str
-    num_questions: int
-    questions: List[Dict]
+# --- Roles Endpoints (Scoped to HR User) ---
 
-def process_document(file_path, file_type=None):
+@app.route('/api/roles', methods=['GET'])
+def get_roles():
+    """Gets all roles created by a specific HR user."""
+    hr_email = request.args.get('hrEmail')
+    if not hr_email:
+        return jsonify({"error": "hrEmail query parameter is required"}), 400
+    
     try:
-        print(f"Processing document: {file_path} (type: {file_type})")
-        if file_type == 'pdf':
-            loader = PyPDFLoader(file_path)
-        elif file_type in ['doc', 'docx']:
-            loader = Docx2txtLoader(file_path)
-        else:
-            loader = TextLoader(file_path)
-        documents = loader.load()
-        content = " ".join([doc.page_content for doc in documents])
-        print(f"Extracted content length: {len(content) if content else 0}")
-        if not content:
-            raise ValueError("Failed to extract content from the document")
-
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000,
-            chunk_overlap=200
-        )
-        chunks = text_splitter.split_text(content)
-        print(f"Number of chunks: {len(chunks)}")
-        if not chunks:
-            raise ValueError("No text chunks created from document")
-
-        print("Creating FAISS vector store...")
-        vectorstore = FAISS.from_texts(chunks, get_embeddings())
-        base_retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
-
-        print("Creating MultiQueryRetriever...")
-        retriever = MultiQueryRetriever.from_llm(
-            retriever=base_retriever,
-            llm=get_llm(),
-        )
-        return retriever
+        roles_cursor = db.roles.find({"hrEmail": hr_email})
+        roles_list = []
+        for role in roles_cursor:
+            role['_id'] = str(role['_id'])  # Convert ObjectId for JSON compatibility
+            roles_list.append(role)
+        return jsonify(roles_list), 200
     except Exception as e:
-        error_details = traceback.format_exc()
-        print(f"Error in process_document: {error_details}")
-        raise ValueError(f"Failed to process document: {str(e)}")
+        app.logger.error(f"Get roles error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-def retrieve_content(state: GraphState) -> GraphState:
+@app.route('/api/roles', methods=['POST'])
+def create_role():
+    """Creates a new role and associates it with the logged-in HR user."""
     try:
-        retriever = state.get("retriever")
-        difficulty = state.get("difficulty", "medium")
-        print(f"Retrieving content for difficulty: {difficulty}")
+        data = request.get_json()
+        hr_email = data.get("hrEmail")
+        
+        if not hr_email:
+            return jsonify({"error": "hrEmail is required to create a role"}), 400
 
-        if retriever is None:
-            raise ValueError("Retriever object is missing")
+        # Basic validation for required fields
+        required_fields = ["title", "description", "date", "maxStudents", "seatsAvailable", "package"]
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": f"Missing one of required fields: {required_fields}"}), 400
 
-        query = f"Information for {difficulty} difficulty quiz"
-        docs = retriever.invoke(query)
-        content = "\n\n".join([doc.page_content for doc in docs]) if docs else ""
-        print(f"Retrieved content length: {len(content)}")
-        if not content:
-            raise ValueError("No relevant content retrieved")
-
-        return {
-            "retriever": retriever,
-            "content": content,
-            "difficulty": difficulty,
-            "num_questions": state["num_questions"]
+        role = {
+            "hrEmail": hr_email,
+            "title": data.get("title"),
+            "description": data.get("description"),
+            "date": data.get("date"),
+            "duration": data.get("duration", "60"),
+            "maxStudents": int(data.get("maxStudents")),
+            "seatsAvailable": int(data.get("seatsAvailable")),
+            "package": data.get("package"),
+            "studentsCount": 0,
+            "status": "Draft",
+            "createdAt": datetime.utcnow()
         }
+        result = db.roles.insert_one(role)
+        role['_id'] = str(result.inserted_id)
+        return jsonify(role), 201
     except Exception as e:
-        error_details = traceback.format_exc()
-        print(f"Error in retrieve_content: {error_details}")
-        raise ValueError(f"Failed to retrieve content: {str(e)}")
+        app.logger.error(f"Create role error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-def generate_questions(state: GraphState) -> GraphState:
+# --- Students Endpoints (Scoped to HR User) ---
+
+@app.route('/api/students', methods=['GET'])
+def get_students():
+    """Gets all students added by a specific HR user."""
+    hr_email = request.args.get('hrEmail')
+    if not hr_email:
+        return jsonify({"error": "hrEmail query parameter is required"}), 400
+        
     try:
-        content = state["content"]
-        difficulty = state["difficulty"]
-        num_questions = state["num_questions"]
-        print(f"Generating {num_questions} questions (difficulty: {difficulty}, content length: {len(content)})")
-
-        prompt = ChatPromptTemplate.from_template(""" 
-        You are an expert quiz creator. Create {num_questions} quiz questions with the following parameters:
-        
-        1. Difficulty level: {difficulty}
-        2. Each question should have four possible answers (A, B, C, D)
-        3. Only use information found in the provided content
-        
-        Content:
-        {content}
-        
-        Return the quiz in the following JSON format:
-        
-        [
-            {{"question": "Question text",
-              "options": [
-                  "A. Option A",
-                  "B. Option B", 
-                  "C. Option C",
-                  "D. Option D"
-              ],
-              "correct_answer": "A. Option A",
-              "explanation": "Brief explanation of why this is correct"
-            }}
-        ]
-        
-        Only return the JSON without any additional explanation or text.
-        """)
-
-        parser = JsonOutputParser()
-        chain = prompt | get_llm() | parser
-        questions = chain.invoke({
-            "content": content,
-            "difficulty": difficulty,
-            "num_questions": num_questions
-        })
-        print(f"Generated {len(questions) if questions else 0} questions")
-        if not questions or not isinstance(questions, list):
-            raise ValueError("No valid questions generated")
-
-        for idx, question in enumerate(questions):
-            if not all(key in question for key in ["question", "options", "correct_answer", "explanation"]):
-                raise ValueError(f"Question {idx} is missing required fields")
-            if len(question["options"]) != 4:
-                raise ValueError(f"Question {idx} does not have exactly 4 options")
-            if question["correct_answer"] not in question["options"]:
-                raise ValueError(f"Question {idx} has a correct answer that is not in the options")
-
-        return {"questions": questions}
+        # Find students, excluding the sensitive password field from the result
+        students_cursor = db.students.find({"hrEmail": hr_email}, {'password': 0})
+        students_list = []
+        for student in students_cursor:
+            student['_id'] = str(student['_id'])
+            students_list.append(student)
+        return jsonify(students_list), 200
     except Exception as e:
-        error_details = traceback.format_exc()
-        print(f"Error in generate_questions: {error_details}")
-        raise Exception(f"Failed to generate questions: {str(e)}")
+        app.logger.error(f"Get students error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-def create_quiz_graph():
-    workflow = StateGraph(GraphState)
-    workflow.add_node("retrieve_content", retrieve_content)
-    workflow.add_node("generate_questions", generate_questions)
-    workflow.add_edge("retrieve_content", "generate_questions")
-    workflow.add_edge("generate_questions", END)
-    workflow.set_entry_point("retrieve_content")
-    return workflow.compile()
-
-@app.route('/api/generate-quiz', methods=['POST'])
-def generate_quiz():
-    print("Received request to generate quiz")
-    if 'file' not in request.files and request.form.get('content_type') != 'youtube':
-        print("Validation failed: No file provided")
-        return jsonify({"error": "No file provided"}), 400
-
-    content_type = request.form.get('content_type')
-    difficulty = request.form.get('difficulty', 'medium')
-    num_questions = request.form.get('num_questions', 3)
-    class_name = request.form.get('class_name')
-    year = request.form.get('year')
-    teacher = request.form.get('teacher', 'default_teacher')
-
-    if not class_name or not year:
-        print("Validation failed: Required fields missing")
-        return jsonify({"error": "Required fields missing"}), 400
-
-    if difficulty not in ['easy', 'medium', 'hard']:
-        print(f"Validation failed: Invalid difficulty: {difficulty}")
-        return jsonify({"error": "Invalid difficulty level"}), 400
-
+@app.route('/api/students', methods=['POST'])
+def create_student():
+    """Creates a new student and associates them with the logged-in HR user."""
     try:
-        num_questions = int(num_questions)
-        if num_questions < 1 or num_questions > 20:
-            print(f"Validation failed: Invalid number of questions: {num_questions}")
-            return jsonify({"error": "Number of questions must be between 1 and 20"}), 400
-    except ValueError:
-        print(f"Validation failed: Invalid number of questions: {num_questions}")
-        return jsonify({"error": "Number of questions must be a valid integer"}), 400
+        data = request.get_json()
+        hr_email = data.get("hrEmail")
 
-    file_path = None
-    if content_type != 'youtube':
-        file = request.files['file']
-        file_extension = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-        if file_extension not in ['pdf', 'doc', 'docx']:
-            print(f"Validation failed: Invalid file type: {file_extension}")
-            return jsonify({"error": "Only PDF, DOC, DOCX files allowed"}), 400
+        if not hr_email:
+            return jsonify({"error": "hrEmail is required to add a student"}), 400
+        
+        required_fields = ["name", "email", "rollNo", "role", "password"]
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": f"Missing one of required fields: {required_fields}"}), 400
+        
+        if db.students.find_one({"email": data.get("email")}):
+            return jsonify({"error": "A student with this email already exists"}), 409
 
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        try:
-            file.save(file_path)
-            print(f"Saved document to: {file_path}")
-        except Exception as e:
-            error_details = traceback.format_exc()
-            print(f"Failed to save file: {error_details}")
-            return jsonify({"error": f"Failed to save file: {str(e)}"}), 500
+        hashed_password = bcrypt.hashpw(data.get("password").encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
+        student = {
+            "hrEmail": hr_email,
+            "name": data.get("name"),
+            "email": data.get("email"),
+            "rollNo": data.get("rollNo"),
+            "role": data.get("role"),
+            "password": hashed_password,
+            "status": "Eligible",
+            "createdAt": datetime.utcnow()
+        }
+        result = db.students.insert_one(student)
+        student['_id'] = str(result.inserted_id)
+        del student['password']  # Never send the password hash back in the response
+        return jsonify(student), 201
+    except Exception as e:
+        app.logger.error(f"Create student error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+    
+@app.route('/api/get-random-questions', methods=['GET'])
+def get_random_questions():
+    """Fetches a random set of questions from the aptitude collection."""
     try:
-        if content_type != 'youtube':
-            retriever = process_document(file_path, file_extension)
-        else:
-            return jsonify({"error": "YouTube content type not supported in this version"}), 400
+        total_questions = db.aptitude.count_documents({})
+        if total_questions == 0:
+            return jsonify({"error": "No questions available in the aptitude collection"}), 404
 
-        quiz_graph = create_quiz_graph()
-        result = quiz_graph.invoke({
-            "retriever": retriever,
-            "difficulty": difficulty,
-            "num_questions": num_questions
-        })
+        num_questions = min(request.args.get('count', default=5, type=int), total_questions)
+        pipeline = [{"$sample": {"size": num_questions}}]
+        questions = list(db.aptitude.aggregate(pipeline))
 
-        if not result.get("questions") or not isinstance(result["questions"], list):
-            print("Quiz generation failed: No valid questions generated")
-            raise ValueError("No valid questions generated. The document may lack sufficient content for quiz generation.")
+        for question in questions:
+            question['_id'] = str(question['_id'])
 
-        generated_questions = result["questions"]
-        print(f"Generated {len(generated_questions)} questions")
+        return jsonify(questions), 200
+    except Exception as e:
+        app.logger.error(f"Get random questions error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-        quiz_data = {
-            "title": f"Quiz for {class_name}",
-            "questions": generated_questions,
-            "createdDate": datetime.now(),
-            "class_name": class_name,
-            "year": year,
-            "teacher": teacher
+# --- New Results Endpoint ---
+@app.route('/api/submit-results', methods=['POST'])
+def submit_results():
+    """Stores quiz results for a candidate, including user details, score, percentage, and round."""
+    try:
+        data = request.get_json()
+        candidate_data = data.get("candidate")
+        score = data.get("score")
+        percentage = data.get("percentage")
+        total_questions = data.get("total_questions")
+        round_number = data.get("round")
+
+        # Validate required fields
+        required_fields = ["id", "email", "rollNo", "role", "status"]
+        if not candidate_data or not all(field in candidate_data for field in required_fields):
+            return jsonify({"error": "Missing required candidate data fields: id, email, rollNo, role, status"}), 400
+        if score is None or percentage is None or total_questions is None or round_number is None:
+            return jsonify({"error": "Missing required fields: score, percentage, total_questions, or round"}), 400
+
+        # Prepare quiz result document
+        quiz_result = {
+            "candidate_id": candidate_data["id"],
+            "email": candidate_data["email"],
+            "rollNo": candidate_data["rollNo"],
+            "role": candidate_data["role"],
+            "status": candidate_data["status"],
+            "score": int(score),
+            "percentage": float(percentage),
+            "total_questions": int(total_questions),
+            "round": int(round_number),
+            "submittedAt": datetime.utcnow()
         }
-        quiz_result = quiz_collection.insert_one(quiz_data)
-        quiz_id = quiz_result.inserted_id
-        print(f"Quiz saved to MongoDB with ID: {quiz_id}")
 
-        classroom_data = {
-            "name": class_name,
-            "year": year,
-            "teacher": teacher,
-            "quizzes": [quiz_id],
-            "createdDate": datetime.now(),
-            "status": "active"
-        }
-        classroom_result = classroom_collection.insert_one(classroom_data)
-        print(f"Classroom created with ID: {classroom_result.inserted_id}")
+        # Insert into quiz_results collection
+        result = db.quiz_results.insert_one(quiz_result)
+        quiz_result['_id'] = str(result.inserted_id)
 
         return jsonify({
-            "message": "Quiz and classroom created successfully",
-            "quiz_id": str(quiz_id),
-            "classroom_id": str(classroom_result.inserted_id),
-            "quiz": generated_questions
+            "message": "Quiz results stored successfully",
+            "quiz_result": quiz_result
         }), 201
-
     except Exception as e:
-        error_details = traceback.format_exc()
-        print(f"Error in generate_quiz: {error_details}")
-        if 'quiz_id' in locals():
-            quiz_collection.delete_one({"_id": quiz_id})
-            print(f"Rolled back: Deleted quiz with ID: {quiz_id}")
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Submit results error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-    finally:
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                print(f"Temporary file removed: {file_path}")
-            except Exception as e:
-                print(f"Failed to remove temporary file {file_path}: {str(e)}")
-
-def play_alert():
-    global ALERT_ENABLED
-    if ALERT_ENABLED:
-        try:
-            logger.info("Alert sound played (simulated)")
-        except Exception as e:
-            logger.error(f"Failed to play alert: {e}")
-    logger.warning("ALERT: Not looking at camera!")
-
-def detect_gaze(eye_frame):
+@app.route('/api/round2/results', methods=['POST'])
+def submit_round2_results():
+    """Stores round 2 results for a candidate."""
     try:
-        height, width = eye_frame.shape[:2]
-        _, threshold_eye = cv2.threshold(eye_frame, 55, 255, cv2.THRESH_BINARY_INV)
-        kernel = np.ones((3, 3), np.uint8)
-        threshold_eye = cv2.morphologyEx(threshold_eye, cv2.MORPH_OPEN, kernel, iterations=1)
-        contours, _ = cv2.findContours(threshold_eye, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        if len(contours) > 0:
-            contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(contour) > 10:
-                M = cv2.moments(contour)
-                if M["m00"] != 0:
-                    pupil_cx = int(M["m10"] / M["m00"])
-                    pupil_cy = int(M["m01"] / M["m00"])
-                    relative_x = pupil_cx / width
-                    if 0.3 <= relative_x <= 0.7:
-                        return "center", relative_x
-                    elif relative_x < 0.3:
-                        return "left", relative_x
-                    else:
-                        return "right", relative_x
-        return "center", 0.5
-    except Exception as e:
-        logger.error(f"Error in detect_gaze: {e}")
-        return "center", 0.5
+        data = request.get_json()
+        candidateId = data.get("candidateId")
+        candidateEmail = data.get("candidateEmail")
+        candidateRoll = data.get("candidateRoll")
+        CandidateRollno = data.get("CandidateRollno")
+        submissionDate = data.get("submissionDate")
+        score = data.get("score")
+        totalScore = data.get("totalScore")
 
-def process_image(image_data):
-    global looking_away, looking_away_start_time, last_alert_time, warnings, long_blink_count
-    try:
-        img_bytes = base64.b64decode(image_data.split(',')[1])
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError("Failed to decode image")
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        faces = get_face_cascade().detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)  # Adjusted parameters
-        current_time = time.time()
+        # Validate required fields
+        required_fields = ["candidateId", "candidateEmail", "candidateRoll", "CandidateRollno", "submissionDate", "score", "totalScore"]
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": f"Missing required fields: {required_fields}"}), 400
 
-        face_detected = len(faces) > 0
-        looking_at_screen = False
-        look_direction = "Unknown"
-        eyes_closed = False
-        blink_duration = 0
-        violation_detected = False
-
-        if not face_detected:
-            if not looking_away:
-                looking_away = True
-                looking_away_start_time = current_time
-            elif current_time - looking_away_start_time > alert_threshold:
-                if current_time - last_alert_time > alert_cooldown:
-                    play_alert()
-                    last_alert_time = current_time
-                    warnings += 1
-                violation_detected = warnings >= max_warnings
-        else:
-            looking_away = False
-            for (x, y, w, h) in faces:
-                roi_gray = gray[y:y + h, x:x + w]
-                eyes = get_eye_cascade().detectMultiScale(roi_gray, 1.1, 5)
-                if len(eyes) == 0:
-                    eyes_closed = True
-                    blink_duration = current_time - (looking_away_start_time if looking_away else current_time)
-                    if blink_duration > 2:
-                        long_blink_count += 1
-                else:
-                    for (ex, ey, ew, eh) in eyes:
-                        eye_frame = roi_gray[ey:ey + eh, ex:ex + ew]
-                        direction, _ = detect_gaze(eye_frame)
-                        look_direction = direction
-                        looking_at_screen = direction == "center"
-                        break
-                if not looking_at_screen:
-                    if not looking_away:
-                        looking_away = True
-                        looking_away_start_time = current_time
-                    elif current_time - looking_away_start_time > alert_threshold:
-                        if current_time - last_alert_time > alert_cooldown:
-                            play_alert()
-                            last_alert_time = current_time
-                            warnings += 1
-                        violation_detected = warnings >= max_warnings
-
-        proctor_data = {
-            "face_detected": face_detected,
-            "looking_at_screen": looking_at_screen,
-            "warnings": warnings,
-            "max_warnings": max_warnings,
-            "violation_detected": violation_detected,
-            "look_direction": look_direction,
-            "eyes_closed": eyes_closed,
-            "blink_duration": blink_duration,
-            "long_blink_count": long_blink_count,
-            "head_pose": [0, 0, 0],
-            "ear": 0
-        }
-        return proctor_data
-    except Exception as e:
-        logger.error(f"Error processing image: {e}")
-        return {
-            "face_detected": False, "looking_at_screen": False, "warnings": warnings,
-            "max_warnings": max_warnings, "violation_detected": False, "look_direction": "Unknown",
-            "eyes_closed": False, "blink_duration": 0, "long_blink_count": long_blink_count,
-            "head_pose": [0, 0, 0], "ear": 0, "error": str(e)
+        # Prepare round 2 result document
+        round2_result = {
+            "candidateId": candidateId,
+            "candidateEmail": candidateEmail,
+            "candidateRoll": candidateRoll,
+            "CandidateRollno": CandidateRollno,
+            "submissionDate": submissionDate,
+            "round": 2,
+            "score": int(score),
+            "totalScore": int(totalScore),
+            "submittedAt": datetime.utcnow()
         }
 
-@app.route('/start-exam', methods=['POST'])
-def start_exam():
-    global warnings, long_blink_count
-    warnings = 0
-    long_blink_count = 0
-    logger.info("Exam session started")
-    return jsonify({"status": "Exam started"}), 200
+        # Insert into quiz_results collection
+        result = db.quiz_results.insert_one(round2_result)
+        round2_result['_id'] = str(result.inserted_id)
 
-@app.route('/process-frame', methods=['POST'])
-def process_frame():
-    try:
-        data = request.json
-        if not data or 'image' not in data:
-            logger.error("No image data provided")
-            return jsonify({"error": "No image data provided"}), 400
-        proctor_data = process_image(data['image'])
-        return jsonify(proctor_data), 200
+        return jsonify({
+            "message": "Round 2 results stored successfully",
+            "round2_result": round2_result
+        }), 201
     except Exception as e:
-        logger.error(f"Error in process_frame: {e}")
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Submit round 2 results error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
 
-@app.route('/end-exam', methods=['POST'])
-def end_exam():
-    global warnings, long_blink_count
-    warnings = 0
-    long_blink_count = 0
-    logger.info("Exam session ended")
-    return jsonify({"status": "Exam ended"}), 200
+@app.route('/api/round3/results', methods=['POST'])
+def submit_round3_results():
+    """Stores round 3 results for a candidate."""
+    try:
+        data = request.get_json()
+        candidateId = data.get("candidateId")
+        candidateEmail = data.get("candidateEmail")
+        candidateRoll = data.get("candidateRoll")
+        CandidateRollno = data.get("CandidateRollno")
+        submissionDate = data.get("submissionDate")
+        score = data.get("score")
+        totalScore = data.get("totalScore")
 
-@app.route('/toggle_alerts', methods=['GET'])
-def toggle_alerts():
-    global ALERT_ENABLED
-    ALERT_ENABLED = not ALERT_ENABLED
-    status = "enabled" if ALERT_ENABLED else "disabled"
-    logger.info(f"Alerts {status}")
-    return jsonify({"status": f"Alerts {status}"}), 200
+        # Validate required fields
+        required_fields = ["candidateId", "candidateEmail", "candidateRoll", "CandidateRollno", "submissionDate", "score", "totalScore"]
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": f"Missing required fields: {required_fields}"}), 400
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    print("Health check requested")
-    return jsonify({"status": "healthy"}), 200
+        # Prepare round 3 result document
+        round3_result = {
+            "candidateId": candidateId,
+            "candidateEmail": candidateEmail,
+            "candidateRoll": candidateRoll,
+            "CandidateRollno": CandidateRollno,
+            "submissionDate": submissionDate,
+            "round": 3,
+            "score": int(score),
+            "totalScore": int(totalScore),
+            "submittedAt": datetime.utcnow()
+        }
 
-if __name__ == "__main__":
-    print("Starting Flask server...")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+        # Insert into quiz_results collection
+        result = db.quiz_results.insert_one(round3_result)
+        round3_result['_id'] = str(result.inserted_id)
+
+        return jsonify({
+            "message": "Round 3 results stored successfully",
+            "round3_result": round3_result
+        }), 201
+    except Exception as e:
+        app.logger.error(f"Submit round 3 results error: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
