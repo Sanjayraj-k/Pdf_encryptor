@@ -213,38 +213,44 @@ const SnapIDApp = () => {
       showMessage('error', 'Download failed. Please try again.');
     }
   };
+// This is the NEW, correct code
+const handleDownloadAll = async () => {
+  setLoading(true);
+  try {
+    // Create a lightweight array containing only the filenames.
+    const matchesToDownload = searchResults.map(result => ({ 
+        filename: result.filename 
+    }));
 
-  const handleDownloadAll = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/download_all_matches`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matches: searchResults }),
-        credentials: 'include'
-      });
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `matched_photos_${currentUser}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-        showMessage('success', 'Downloading all matched photos as ZIP');
-      } else {
-        const data = await response.json();
-        showMessage('error', data.error || 'Download failed');
-      }
-    } catch (error) {
-      showMessage('error', 'Download failed. Please try again.');
+    const response = await fetch(`${API_BASE_URL}/download_all_matches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // SOLUTION: Send only the lightweight array of filenames.
+      // This request will be very small and will not hit the size limit.
+      body: JSON.stringify({ matches: matchesToDownload }),
+      credentials: 'include'
+    });
+    
+    if (response.ok) {
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `matched_photos_${currentUser}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      showMessage('success', 'Downloading all matched photos as ZIP');
+    } else {
+      const data = await response.json();
+      showMessage('error', data.error || 'Download failed');
     }
-    setLoading(false);
-  };
-
+  } catch (error) {
+    showMessage('error', 'Download failed. Please try again.');
+  }
+  setLoading(false);
+};
   const logout = async () => {
     setLoading(true);
     try {
